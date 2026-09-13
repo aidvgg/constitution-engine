@@ -1,624 +1,161 @@
-# GPT-GOV — Technical README
+# Constitution Engine
 
-A backend-only, memory‑anchored, policy‑driven AI governance system built with **Bun + Express + TypeScript + PostgreSQL (+pgvector) + n8n + Vercel AI SDK** and deployable on **Railway**.
+Constitution Engine is a backend MVP for recording events, evaluating actions against versioned policy rules, and linking decisions to later outcomes. Its governance model is deliberately deterministic: policy constraints are evaluated in code, the selected policy version is stored with each decision, and decisions are linked with a hash chain for tamper-evident history.
 
-This README is the *engineering spec + operations manual* for the repository. It explains the architecture, environment, database, APIs, jobs, learning loops, security, observability, and extension patterns.
+The repository currently ships a local Bun, Express, TypeScript, and PostgreSQL service. It does not yet ship an LLM adapter, external tool adapters, scheduled jobs, vector similarity search, authentication, or a deployment configuration.
 
----
+## What is implemented
 
-## Table of Contents
-
-1. [Overview](#overview)  
-2. [Architecture](#architecture)  
-   - [Core Concepts](#core-concepts)  
-   - [System Diagram](#system-diagram)  
-   - [Data Flow](#data-flow)  
-3. [Stack](#stack)  
-4. [Repository Structure](#repository-structure)  
-5. [Environment Variables](#environment-variables)  
-6. [Database](#database)  
-   - [Schema](#schema)  
-   - [Migrations](#migrations)  
-   - [Indexes](#indexes)  
-7. [Policies & Governance](#policies--governance)  
-8. [Memory Layers](#memory-layers)  
-9. [APIs](#apis)  
-   - [Health & Metrics](#health--metrics)  
-   - [Events](#events-api)  
-   - [Decisions](#decisions-api)  
-   - [Outcomes](#outcomes-api)  
-   - [Policies](#policies-api)  
-   - [Jobs](#jobs-api)  
-10. [Adapters](#adapters)  
-11. [Learning & Improvement](#learning--improvement)  
-12. [Batch Jobs (n8n)](#batch-jobs-n8n)  
-13. [Observability](#observability)  
-14. [Security & Compliance](#security--compliance)  
-15. [Performance & SLOs](#performance--slos)  
-16. [Local Development](#local-development)  
-17. [Deployment (Railway)](#deployment-railway)  
-18. [Testing Strategy](#testing-strategy)  
-19. [Troubleshooting](#troubleshooting)  
-20. [Extending the System](#extending-the-system)  
-21. [Glossary](#glossary)  
-
----
-
-## Overview
-
-**GPT-GOV** is a minimal yet production‑minded platform for “internal GPT governments” — a collection of governing nodes (Sales, Finance, etc.) that make controlled decisions under a **Constitution** (policies). It includes:
-
-- **Deterministic policy evaluation** (guardrails & autonomy levels).  
-- **LLM‑assisted judgment** with strict schema validation.  
-- **Multi‑layer memory** (events → decisions → features → snapshots).  
-- **Closed‑loop learning** (outcomes → scorecards → policy proposals).  
-- **Adapter layer** to connect external tools (Slack, Stripe, …).  
-- **Observability, audit, and safety tooling** (hash chains, kill switches).
-
----
+- Versioned policies are loaded from PostgreSQL by `name` or `name@version` and cached for 60 seconds.
+- Autonomy bands are sorted by level and evaluated against `min_` and `max_` numeric constraints.
+- Matching inputs produce an approved decision and autonomy level. Inputs outside every band produce an AL0 escalation result.
+- Decisions store the exact policy version, inputs, output, autonomy level, latency, correlation ID, current hash, and previous hash.
+- Events are stored with type, actor, payload, timestamp, and correlation ID.
+- Outcomes use upsert semantics and compute a binary reward from `success` or the backward-compatible `won` metric, subject to the matched band's constraints.
+- Request errors are passed through structured middleware, while startup migration failures stop the process and SIGTERM/SIGINT trigger graceful shutdown.
+- Memory assembly can read knowledge snapshots. Similar-decision search and entity features are currently stubs.
 
 ## Architecture
 
-### Core Concepts
-
-- **Event** — immutable fact emitted by systems or humans.  
-- **Decision** — the outcome produced by a node (e.g., approve/deny).  
-- **Outcome** — delayed ground truth (e.g., invoice paid, deal won).  
-- **Policy / Constitution** — versioned rules defining authorities & guardrails.  
-- **Autonomy Levels (AL0–AL3)** — how far the node can act without a human.  
-- **Memory** — structured & semantic recall used to inform decisions.  
-- **Learning Loop** — outcomes update scorecards; variants compete via bandits.  
-- **Adapter** — typed contract to external tools with schemas and health checks.
-
-### System Diagram
-
-```mermaid
-flowchart LR
-  subgraph Client/Integrations
-    A[n8n / Webhooks / SaaS]
-  end
-
-  A -->|POST /events| E[Events API]
-
-  subgraph Backend (Bun + Express + TS)
-    E --> C[Context Assembler]
-    C --> P[Policy Evaluator]
-    C --> LLM[LLM (Vercel AI SDK)]
-    P --> D[Decisions Store]
-    LLM --> V[Validator & Guardrails]
-    V --> P
-    D --> O[Outcomes Linker]
-    O --> R[Rewards/Bandit Stats]
-    D --> S[Snapshots/Features Jobs]
-  end
-
-  subgraph Postgres (+pgvector)
-    DB1[(events)]
-    DB2[(decisions)]
-    DB3[(outcomes)]
-    DB4[(policy_versions)]
-    DB5[(entity_features)]
-    DB6[(knowledge_snapshots)]
-    DB7[(policy_variants_stats)]
-  end
-
-  E <-->|INSERT/SELECT| DB1
-  D <-->|INSERT/SELECT| DB2
-  O <-->|INSERT/SELECT| DB3
-  P <-->|SELECT| DB4
-  S <-->|UPSERT| DB5
-  S <-->|INSERT| DB6
-  R <-->|UPSERT| DB7
-
-  subgraph Adapters
-    SLK[Slack]
-    STR[Stripe]
-  end
-
-  D -->|trigger| STR
-  S -->|report| SLK
-
+```text
+HTTP request
+  -> request ID and logging middleware
+  -> Zod request validation
+  -> route handler
+  -> policy loader / deterministic evaluator
+  -> PostgreSQL via Drizzle ORM
+  -> structured response and error middleware
 ```
 
-### Data Flow
+The main persistence tables are `events`, `decisions`, `outcomes`, `policy_versions`, `entity_features`, `knowledge_snapshots`, and `policy_variants_stats`. PostgreSQL is initialized with the `vector` and `uuid-ossp` extensions, although vector similarity queries are not implemented yet.
 
-1. Ingest an **Event** (e.g., `DiscountRequested`).  
-2. Assemble **Context** (policy, similar cases, snapshots).  
-3. Produce **Decision**: deterministic evaluator + (optional) LLM JSON‑output constrained by policy.  
-4. Execute **Action** via **Adapters** (e.g., create invoice in Stripe).  
-5. Receive **Outcome** later (won/lost, paid/unpaid).  
-6. Nightly jobs compute **Features** and **Snapshots**.  
-7. Scorecards update **Variant Stats** and may propose **Policy Promotions** via Slack.
+## Local setup
 
----
+Requirements:
 
-## Stack
+- Bun
+- Docker with Docker Compose
+- PostgreSQL supplied by the repository's Compose service
 
-- **Runtime:** Bun 1.x  
-- **Server:** Express 4, TypeScript  
-- **DB:** PostgreSQL 15+ + `pgvector`  
-- **ORM:** Drizzle ORM  
-- **AI:** Vercel AI SDK (`ai`) + `@ai-sdk/openai`  
-- **Jobs/Crons:** n8n (webhooks + scheduled)  
-- **Deploy:** Railway  
-- **Logs:** pino  
-- **Validation:** zod  
+Configure these environment names in the local shell or `.env` file. Do not commit credentials:
 
----
-
-## Repository Structure
-
-```
-src/
-  server.ts
-  config/
-    env.ts
-  db/
-    index.ts
-    schema.ts
-    migrations/            # (optional: generated by drizzle-kit)
-  routes/
-    health.ts
-    events.ts
-    decisions.ts
-    outcomes.ts
-    policies.ts
-    jobs.ts
-  core/
-    policy/
-      types.ts
-      loader.ts
-      evaluator.ts
-    memory/
-      embeddings.ts
-      assembler.ts
-      indexer.ts
-      similar.ts
-    learning/
-      bandit.ts
-      reward.ts
-    adapters/
-      contract.ts
-      slack.ts
-      stripe.ts
-    audit/
-      hashchain.ts
-  jobs/
-    aggregator.sql
-    aggregator.ts
-    distill.ts
-    scorecards.ts
-flows/
-  ingest.json              # n8n export(s)
-drizzle.config.ts
+```text
+PORT
+DATABASE_URL
+POSTGRES_USER
+POSTGRES_PASSWORD
+POSTGRES_DB
+POSTGRES_PORT
 ```
 
----
+Start the local database and development server:
 
-## Environment Variables
+```bash
+bun install
+bun run dev
+```
 
-| Key | Description |
-| --- | --- |
-| `PORT` | HTTP port (default 3000) |
-| `DATABASE_URL` | Postgres connection string |
-| `OPENAI_API_KEY` | API key for Vercel AI SDK (OpenAI provider) |
-| `SLACK_BOT_TOKEN` | Slack Bot token for notifications |
-| `INTERNAL_JOB_TOKEN` | Shared secret for job endpoints |
-| `NODE_ENV` | `development` or `production` |
+`bun run dev` starts PostgreSQL through Docker Compose and starts the server with hot reload. The server applies the checked-in Drizzle migrations during startup. In a separate shell, seed the example `finance-constitution@1.0.0` policy:
 
-Create `.env` from `.env.example` and populate the values.
+```bash
+bun run seed
+```
 
----
+Useful lifecycle commands:
 
-## Database
+```bash
+bun run up
+bun run down
+bun run logs
+bun run build
+```
 
-### Schema
+## HTTP API
 
-**events**
-- `id uuid pk`  
-- `type text`  
-- `ts timestamptz default now()`  
-- `actor text`  
-- `correlation_id uuid`  
-- `payload jsonb`
+All mutating routes accept JSON. When a request omits `correlationId`, the generated request ID is used.
 
-**decisions**
-- `id uuid pk`  
-- `node text`  
-- `policy_version text`  
-- `inputs jsonb`  
-- `output jsonb`  
-- `autonomy_level int`  
-- `requires_human bool`  
-- `human_approver uuid`  
-- `latency_ms int`  
-- `ts timestamptz default now()`  
-- `context_vec vector(1536)`  
-- `prev_hash text`  
-- `hash text`
+### `GET /health`
 
-**outcomes**
-- `decision_id uuid pk → decisions.id`  
-- `recorded_at timestamptz default now()`  
-- `metrics jsonb`  (e.g., `{"won":true,"margin":0.24,"time_to_close_days":3}`)
+Returns the request correlation ID and `{ "ok": true }`. This is a process-level health response; it does not query PostgreSQL.
 
-**policy_versions**
-- `id serial pk`  
-- `name text` (e.g., `finance-constitution`)  
-- `version text` (semver)  
-- `doc jsonb` (parsed YAML/JSON)  
-- `created_at timestamptz`
+### `GET /metrics`
 
-**entity_features**
-- `entity_type text`  
-- `entity_id text`  
-- `as_of_date date`  
-- `features jsonb`  
-- **PK** (`entity_type`, `entity_id`, `as_of_date`)
+Returns the current placeholder response with `p50Latency`, `p95Latency`, and `errorCount`. These values are not yet calculated from request traffic.
 
-**knowledge_snapshots**
-- `id serial pk`  
-- `scope text` (e.g., `finance-daily`)  
-- `period_start date`  
-- `period_end date`  
-- `summary text`  
-- `summary_vec vector(1536)`  
-- `created_at timestamptz`
+### `POST /events`
 
-**policy_variants_stats**
-- `variant text pk` (e.g., `finance-constitution@1.1.B`)  
-- `alpha int`  
-- `beta int`  
-- `updated_at timestamptz`
-
-### Migrations
-
-- Enable `pgvector`:
-  ```sql
-  CREATE EXTENSION IF NOT EXISTS vector;
-  ```
-- Use `drizzle-kit` to generate and push migrations.
-
-### Indexes
-
-- `events(type, ts)`  
-- `decisions(node, ts)`  
-- `decisions(policy_version)`  
-- `outcomes(recorded_at)`  
-- `entity_features(as_of_date)`  
-- `knowledge_snapshots(scope, period_end)`  
-- `policy_versions(name, created_at desc)`
-
----
-
-## Policies & Governance
-
-A **policy** (constitution) defines authorities and guardrails. It is **versioned** and **audited**.
-
-**Example (JSON)**
+Creates an event. Required fields are `type`, `actor`, and an object `payload`; `correlationId` is optional and must be a UUID.
 
 ```json
 {
-  "version": "1.0.0",
-  "nodes": {
-    "finance": {
-      "authorities": [
-        {
-          "action": "approve_discount",
-          "autonomy_bands": [
-            { "level": 1, "max_discount_pct": 0.05, "min_margin_pct": 0.25 },
-            { "level": 2, "max_discount_pct": 0.12, "min_margin_pct": 0.23 },
-            { "level": 3, "max_discount_pct": 0.15, "min_margin_pct": 0.22 }
-          ],
-          "escalation": { "if_outside": "CFO" }
-        }
-      ]
-    }
-  }
+  "type": "DiscountRequested",
+  "actor": "sales-node",
+  "payload": { "deal_id": "D1" }
 }
 ```
 
-**Autonomy Levels**
-- **AL0** — recommend only (human must approve).  
-- **AL1** — auto within tight guardrails.  
-- **AL2** — auto within broader guardrails + notify.  
-- **AL3** — full autonomy + ex‑post audit.
+### `POST /decisions/:node`
 
-Publishing a new policy creates a new `policy_versions` row; decisions record the **exact** `policy_version` for reproducibility.
+Evaluates an action against the selected node's authority. Required fields are `action` and an object `data`; `policyVersion` is optional and defaults to `<node>-constitution`.
 
----
-
-## Memory Layers
-
-1. **Raw events** — append‑only, all signals.  
-2. **Decision records** — inputs, outputs, policy version, autonomy.  
-3. **Aggregated features** — daily KPIs per entity/type.  
-4. **Knowledge snapshots** — distilled summaries (daily/weekly) + embeddings.  
-5. **Semantic recall** — `pgvector` for similar past cases and snapshot retrieval.
-
-This layering keeps **context compact** and **auditable**.
-
----
-
-## APIs
-
-### Health & Metrics
-
-- `GET /health` → `{ ok: true }`  
-- `GET /metrics` → JSON counters: p50/p95 latency, error counts, token usage, autonomy distribution.
-
-### Events API
-
-- `POST /events`  
-  **Body**
-  ```json
-  {
-    "type": "DiscountRequested",
-    "actor": "sales-node",
-    "correlationId": "uuid-optional",
-    "payload": { "deal_id":"D1","deal_value":10000 }
-  }
-  ```
-  **Response** → inserted event row.
-
-**cURL**
-```bash
-curl -X POST $HOST/events -H 'content-type: application/json' \
-  -d '{"type":"DiscountRequested","actor":"sales-node","payload":{"deal_id":"D1","deal_value":10000}}'
-```
-
-### Decisions API
-
-- `POST /decisions/finance`  
-  **Body**
-  ```json
-  {
-    "deal_value": 12000,
-    "base_margin_pct": 0.31,
-    "requested_discount_pct": 0.08,
-    "customer_tier": "A"
-  }
-  ```
-  **Response**
-  ```json
-  {
-    "decision": {
-      "id": "uuid",
-      "node": "finance",
-      "policy_version": "finance-constitution@1.0.0",
-      "output": { "approved": true, "discount_pct": 0.08, "autonomy_level": 2, "reason": "Within L2" },
-      "latency_ms": 340,
-      "ts": "2025-..."
-    }
-  }
-  ```
-
-**Notes**
-- The route selects a **policy variant** (A/B or bandit).  
-- Context is assembled (snapshot + similar decisions).  
-- Evaluator enforces guardrails deterministically; LLM is optional assist.  
-- Decision is stored with a **tamper‑evident hash** (`prev_hash`, `hash`).
-
-### Outcomes API
-
-- `POST /outcomes/:decisionId`  
-  **Body**
-  ```json
-  { "metrics": { "won": true, "margin": 0.24, "time_to_close_days": 3 } }
-  ```
-  Updates `outcomes`. Triggers bandit reward update.
-
-### Policies API
-
-- `POST /policies/finance/publish`  
-  Accepts JSON/YAML; validates schema; inserts new `policy_versions` row.  
-  **Auth**: internal (admin).
-
-### Jobs API
-
-Protected by `x-internal-token: <INTERNAL_JOB_TOKEN>`.
-
-- `POST /jobs/aggregator/run` — compute daily features.  
-- `POST /jobs/distill/run` — generate daily knowledge snapshot.  
-- `POST /jobs/scorecards/run` — compute variant scorecards and (optionally) Slack a promotion proposal.
-
----
-
-## Adapters
-
-Adapters isolate external systems via **typed contracts** with input/output schemas and health checks.
-
-**Contract**
-```ts
-interface InvokeContext {
-  correlationId: string;
-  actor: string;
-  auth: { type: "apiKey" | "oauth2"; tokenRef: string };
-  timeoutMs?: number;
-}
-
-interface ToolAdapter<I, O> {
-  name: string;
-  inputSchema: JSONSchema7;
-  outputSchema: JSONSchema7;
-  invoke(input: I, ctx: InvokeContext): Promise<O>;
-  health?(): Promise<"ok" | "degraded" | "down">;
+```json
+{
+  "action": "approve_discount",
+  "data": { "discount_pct": 0.04, "margin_pct": 0.30 }
 }
 ```
 
-**Examples**
-- **Slack** — `notify(channel, text)` for approvals & proposals.  
-- **Stripe** — `createInvoice`, `retrieveCustomer` for invoice flows.
+The response includes the decision ID, approval result, autonomy level, reason, policy version, latency, correlation ID, and hash-chain fields. A policy must already exist in `policy_versions`.
 
-Adapters implement: validation, retries with backoff, rate limits, and emit events `Tool.Invoked` / `Tool.Result` for audit.
+### `POST /outcomes/:decisionId`
 
----
+Creates or updates an outcome for an existing decision. The body requires an object `metrics`; `correlationId` is optional. The response includes the stored outcome and the computed reward. AL0 decisions return no reward.
 
-## Learning & Improvement
+### `GET /outcomes/:decisionId`
 
-- **Variants** — multiple policy versions (e.g., `@1.0.0`, `@1.1.B`).  
-- **Router** — picks variant per request (A/B or Thompson Sampling).  
-- **Rewards** — computed from outcomes (e.g., `won && margin >= min_margin`).  
-- **Stats** — `policy_variants_stats` stores `(alpha, beta)`.  
-- **Proposals** — daily scorecards Slack a **promotion** when candidate beats baseline with enough samples and delta.
+Returns the stored outcome for a decision, or a not-found error when no outcome exists.
 
-Auto‑promotion is **optional**; recommended flow is **governed learning** (proposal → human approve → publish).
+## Policy model
 
----
+Policies are stored as JSON documents in `policy_versions`. A node contains authorities, each authority has an action and ordered autonomy bands, and an authority can name an escalation target with `ifOutside`.
 
-## Batch Jobs (n8n)
+Constraint keys use this convention:
 
-1. **Ingestor** — HTTP trigger → normalize payload → `POST /events`.  
-2. **Daily Aggregator** (06:00) — run `/jobs/aggregator/run` to upsert `entity_features`.  
-3. **Daily Distill** (06:10) — run `/jobs/distill/run` to write `knowledge_snapshots`.  
-4. **Scorecards** (06:20) — run `/jobs/scorecards/run`; Slack promotion if thresholds met.  
-5. **Outcome Listener** — map SaaS events (e.g., Stripe webhooks) to `POST /outcomes/:decisionId`.
+- `min_field`: the request value must be at least the threshold.
+- `max_field`: the request value must be at most the threshold.
 
-Store exported flows in `flows/*.json` for reproducibility.
+The seed policy defines `finance` and `approve_discount` with AL1, AL2, and AL3 bands. Inputs that match no band are denied and escalated to `CFO`.
 
----
+## Testing
 
-## Observability
-
-- **Metrics** (`/metrics`):  
-  - Decision latency p50/p95  
-  - Error counts per route  
-  - Token usage (LLM)  
-  - Autonomy distribution (AL0–AL3)  
-- **Logs**: pino with correlation IDs.  
-- **Tracing**: optional OpenTelemetry integration (future).  
-- **Dashboards**: latency, success & margin trends, escalation rate, variant performance.
-
----
-
-## Security & Compliance
-
-- **Auth**: service keys for nodes; job endpoints protected with `INTERNAL_JOB_TOKEN`.  
-- **PII**: redact sensitive fields in logs and snapshots.  
-- **Tamper‑evidence**: `decisions` hash chain (`prev_hash`, `hash`).  
-- **Kill switches**: `node_flags` table gating actions by node/action.  
-- **Idempotency**: optional `Idempotency-Key` on mutating routes.  
-- **Least privilege**: per‑adapter secrets with least scopes.  
-- **Backups**: scheduled Postgres backups (Railway or external).  
-- **Retention**: configure retention windows for raw events vs. aggregated features.
-
----
-
-## Performance & SLOs
-
-- **Targets** (local baseline; tune in prod):
-  - Decision latency: p50 < 300ms, p95 < 800ms (excluding external adapter calls).  
-  - Job runtime: < 60s per daily job.  
-  - Error rate: < 1% per route.  
-- **Budgets**:
-  - LLM call timeout: 1500ms.  
-  - Token/cost budgets per node (count & alert).  
-- **Caching**:
-  - Policy cache (LRU) to avoid frequent DB reads.  
-  - Snapshot cache for last N hours.
-
----
-
-## Local Development
-
-1. **Install deps**  
-   ```bash
-   bun install
-   ```
-2. **Start DB** (if local) and enable `pgvector`.  
-3. **Migrate** (Drizzle)  
-   ```bash
-   bun x drizzle-kit generate
-   bun x drizzle-kit push
-   ```
-4. **Run server**  
-   ```bash
-   bun run --hot src/server.ts
-   ```
-5. **Smoke tests**  
-   - `GET /health`  
-   - `POST /events`  
-   - `POST /decisions/finance`  
-   - `POST /outcomes/:decisionId`
-
-**cURL examples**
+The default test command runs the unit suites for reward computation, policy evaluation, and memory assembly:
 
 ```bash
-# Event
-curl -XPOST localhost:3000/events -H 'content-type: application/json' \
- -d '{"type":"DiscountRequested","actor":"sales-node","payload":{"deal_id":"D1","deal_value":10000,"base_margin_pct":0.3,"requested_discount_pct":0.08}}'
-
-# Decision
-curl -XPOST localhost:3000/decisions/finance -H 'content-type: application/json' \
- -d '{"deal_value":10000,"base_margin_pct":0.30,"requested_discount_pct":0.08,"customer_tier":"A"}'
-
-# Outcome
-curl -XPOST localhost:3000/outcomes/<DECISION_ID> -H 'content-type: application/json' \
- -d '{"metrics":{"won":true,"margin":0.24,"time_to_close_days":2}}'
+bun run test
 ```
 
----
+Additional scripts are available:
 
-## Deployment (Railway)
+```bash
+bun run test:unit
+bun run test:integration
+bun run test:all
+bun run test:coverage
+```
 
-1. Create Railway project + Postgres plugin.  
-2. Set Environment Variables (`DATABASE_URL`, `OPENAI_API_KEY`, `SLACK_BOT_TOKEN`, `INTERNAL_JOB_TOKEN`, `PORT`).  
-3. Build & Run:  
-   - Dev: `bun run --hot src/server.ts`  
-   - Prod: transpile with `tsc` and run `node dist/server.js` (or run TS with `bun` directly).  
-4. Provision n8n (Railway service or n8n Cloud) and point cron webhooks to Railway URLs.  
-5. Verify health, metrics, and daily jobs.
+The integration suites require a reachable PostgreSQL database configured through `DATABASE_URL`.
 
----
+## MVP status and future work
 
-## Testing Strategy
+This is an implementation-grounded MVP, not a production deployment blueprint. The current code does not implement the following designs described in `build-plan.md` or the earlier README:
 
-- **Unit**: policy evaluator, context assembler, reward mapping.  
-- **Integration**: Decision API end‑to‑end, variant router selection.  
-- **Data**: migration tests; seed & rollback scripts.  
-- **Shadow mode**: run candidate policy in shadow; compare outcomes for a period.  
-- **Replay**: re-evaluate last N decisions with current policy; detect drifts/diffs.  
+- LLM-assisted evaluation, OpenAI or Vercel AI SDK integration
+- n8n flows, scheduled jobs, feature aggregation, or knowledge distillation
+- policy variant routing, bandit statistics updates, or Slack promotion proposals
+- pgvector k-nearest-neighbor search and embedding generation
+- external adapters such as Slack or Stripe
+- authentication, job tokens, idempotency keys, kill switches, or PII redaction
+- calculated metrics, dashboards, tracing, backups, or retention policies
+- Railway or other deployment configuration
 
----
-
-## Troubleshooting
-
-- **LLM timeouts** — increase timeout budget or fall back to deterministic path.  
-- **Vector ops error** — ensure `pgvector` installed and `vector(1536)` types match your embedding model.  
-- **Policy not found** — verify `policy_versions` populated and loader uses latest `name`.  
-- **Outcomes not updating variants** — confirm `policy_version` stored on decision and `policy_variants_stats` rows exist.  
-- **Slack not sending** — check `SLACK_BOT_TOKEN` scopes and channel ID.
-
----
-
-## Extending the System
-
-### Add a New Node (e.g., HR)
-1. Create evaluator in `core/policy/evaluator.hr.ts` and types.  
-2. Publish `hr-constitution@x.y.z` in `policy_versions`.  
-3. Add route `POST /decisions/hr`.  
-4. Extend context assembler for `hr` scope (snapshots + similar).  
-5. Define outcomes (`Hired`, `Rejected`) and add to reward mapping.  
-6. Add adapter(s) (e.g., Greenhouse, Lever).  
-7. Add daily jobs to snapshot & aggregate HR KPIs.
-
-### Add a New Adapter
-1. Implement `ToolAdapter` with schemas.  
-2. Add health check and rate limits.  
-3. Emit `Tool.Invoked` and `Tool.Result` events.  
-4. Add integration docs and curl examples.
-
----
-
-## Glossary
-
-- **Constitution** — the set of policies granting authorities and constraints.  
-- **Autonomy Level (AL)** — numeric band indicating how independently a node may act.  
-- **Snapshot** — time‑boxed summary (daily/weekly) used for long‑horizon memory.  
-- **Variant** — distinct policy version used for experimentation.  
-- **Bandit** — algorithm allocating traffic to variants to maximize reward.  
-- **Outcome** — ground truth that closes the loop (success/fail).
-
----
-
-**Status**: MVP specification complete. Build using `BUILD_PLAN.md` and evolve incrementally.
+`ERROR_RESILIENCE.md` contains the current error-handling notes and future hardening recommendations. Treat those recommendations, `build-plan.md`, and any unimplemented route examples as design direction rather than shipped API behavior.
