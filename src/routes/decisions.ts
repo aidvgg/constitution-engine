@@ -10,8 +10,48 @@ import {
   type CreateDecisionDto,
 } from "./schemas";
 import { makeDecision } from "../core/decisions/decisions";
+import { verifyChain, type DecisionChainRecord } from "../core/decisions/verify";
+import { db } from "../db";
+import { decisions } from "../db/schema";
+import { asc } from "drizzle-orm";
 
 const router = Router();
+
+/**
+ * GET /decisions/verify
+ *
+ * Read-only chain proof. Loads every decision oldest first and recomputes each
+ * hash through the same builder that created it. `ts` alone is ambiguous when
+ * two decisions share a timestamp, so `id` breaks the tie for a stable order.
+ */
+router.get(
+  "/decisions/verify",
+  asyncHandler(async (req: ValidatedRequest<any, any, any>, res: Response) => {
+    const records = await db.query.decisions.findMany({
+      orderBy: [asc(decisions.ts), asc(decisions.id)],
+      columns: {
+        id: true,
+        inputs: true,
+        output: true,
+        prevHash: true,
+        policyVersion: true,
+        hash: true,
+      },
+    });
+
+    const result = verifyChain(records as DecisionChainRecord[]);
+
+    req.log.info(
+      { chainOk: result.ok, count: records.length },
+      "Decision chain verified"
+    );
+
+    res.status(200).json({
+      success: true,
+      data: { ...result, count: records.length },
+    });
+  })
+);
 
 router.post(
   "/decisions/:node",
