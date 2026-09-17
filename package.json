@@ -1,7 +1,7 @@
 {
   "name": "constitution-engine",
   "version": "1.0.0",
-  "description": "",
+  "description": "Deterministic governance engine: versioned policy, autonomy bands, hash-chained decisions.",
   "main": "dist/index.js",
   "scripts": {
     "migrate:generate": "bun x drizzle-kit generate",
@@ -20,8 +20,8 @@
     "test:coverage": "bun test --coverage"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Aydogdy Agabayev",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@types/pg": "^8.15.6",
