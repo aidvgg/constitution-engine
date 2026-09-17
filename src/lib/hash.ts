@@ -17,6 +17,10 @@ const sortKeys = (obj: any): any => {
   return sorted;
 };
 
+/**
+ * The exact field list that goes into a decision hash. Decision creation and
+ * chain verification both hash through this shape, so the two cannot drift.
+ */
 interface ComputeDecisionHashOptions {
   inputs: Record<string, any>;
   output: Record<string, any>;
@@ -37,4 +41,4 @@ const computeDecisionHash = (params: ComputeDecisionHashOptions): string => {
   return createHash("sha256").update(hashInput).digest("hex");
 };
 
-export { computeDecisionHash };
+export { computeDecisionHash, type ComputeDecisionHashOptions };
