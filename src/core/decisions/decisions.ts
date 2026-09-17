@@ -40,7 +40,6 @@ const makeDecision = async (
     data,
     correlationId,
     policyVersion,
-    // req
   } = params;
 
   const startTime = performance.now();
@@ -60,17 +59,6 @@ const makeDecision = async (
       `Action '${action}' not found in node '${node}' of policy ${policyName}`
     );
   }
-
-  //   no llm evaluations yet, hence a stub
-  //   const context = await assemble(
-  //     {
-  //       node,
-  //       inputData: data,
-  //       contextVec: [],
-  //       options: {},
-  //     },
-  //     req
-  //   );
 
   const evaluationResult = evaluate({ action, data }, authority);
 

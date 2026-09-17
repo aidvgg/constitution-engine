@@ -3,13 +3,10 @@ import { Router } from "express";
 const router = Router();
 
 router.get("/health", (req, res) => {
-  res
-    .json({
-      ok: true,
-      correlationId: req.id,
-    })
-    .status(200)
-    .send();
+  res.status(200).json({
+    ok: true,
+    correlationId: req.id,
+  });
 });
 
 export { router as healthRouter };
