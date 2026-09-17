@@ -2,7 +2,7 @@
 
 ## Overview
 
-This service is designed to **never crash** from application-level errors. It logs all errors and continues serving requests.
+This service is designed so that application-level errors do not crash it. It logs those errors and keeps serving requests. By design, the process still exits with code 1 on an uncaught exception, so a supervisor (Docker, Railway, PM2) can restart it into a clean state.
 
 ## Error Handling Layers
 
