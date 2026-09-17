@@ -128,7 +128,7 @@ The seed policy defines `finance` and `approve_discount` with AL1, AL2, and AL3 
 
 ## Testing
 
-The default test command runs the unit suites for reward computation, policy evaluation, and memory assembly:
+The default test command runs the unit suites for reward computation and policy evaluation, and needs no database:
 
 ```bash
 bun run test
@@ -143,5 +143,5 @@ bun run test:all
 bun run test:coverage
 ```
 
-The integration suites require a reachable PostgreSQL database configured through `DATABASE_URL`.
+The integration suites (policy loading, memory assembly, and route tests) require a reachable PostgreSQL database configured through `DATABASE_URL`.
 
