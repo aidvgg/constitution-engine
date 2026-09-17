@@ -2,9 +2,13 @@
 
 [![CI](https://github.com/aidvgg/constitution-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/aidvgg/constitution-engine/actions/workflows/ci.yml)
 
-Constitution Engine is a backend MVP for recording events, evaluating actions against versioned policy rules, and linking decisions to later outcomes. Its governance model is deliberately deterministic: policy constraints are evaluated in code, the selected policy version is stored with each decision, and decisions are linked with a hash chain for tamper-evident history.
+Constitution Engine decides how much freedom an AI agent gets for a given action, and keeps a record of every answer it gave.
 
-Local stack: Bun, Express, TypeScript, and PostgreSQL.
+You write the rules as a versioned policy. For each action the engine returns one of two answers: approved at a set autonomy level, or escalated to a person. It stores the decision with its inputs and the exact policy version that produced it, and each record carries the hash of the record before it.
+
+The rules run as plain code. No language model takes part in the decision, so the same input always gets the same answer.
+
+Stack: Bun, Express, TypeScript, and PostgreSQL.
 
 ## What is implemented
 
