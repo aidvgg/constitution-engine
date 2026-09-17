@@ -2,7 +2,7 @@
 
 Constitution Engine is a backend MVP for recording events, evaluating actions against versioned policy rules, and linking decisions to later outcomes. Its governance model is deliberately deterministic: policy constraints are evaluated in code, the selected policy version is stored with each decision, and decisions are linked with a hash chain for tamper-evident history.
 
-The repository currently ships a local Bun, Express, TypeScript, and PostgreSQL service. It does not yet ship an LLM adapter, external tool adapters, scheduled jobs, vector similarity search, authentication, or a deployment configuration.
+Local stack: Bun, Express, TypeScript, and PostgreSQL.
 
 ## What is implemented
 
@@ -145,17 +145,3 @@ bun run test:coverage
 
 The integration suites require a reachable PostgreSQL database configured through `DATABASE_URL`.
 
-## Prototype status and future work
-
-This is a **prototype**, not a production deployment. The current code does not implement the following designs described in `build-plan.md` or earlier docs:
-
-- LLM-assisted evaluation, OpenAI or Vercel AI SDK integration
-- n8n flows, scheduled jobs, feature aggregation, or knowledge distillation
-- policy variant routing, bandit statistics updates, or Slack promotion proposals
-- pgvector k-nearest-neighbor search and embedding generation
-- external adapters such as Slack or Stripe
-- authentication, job tokens, idempotency keys, kill switches, or PII redaction
-- calculated metrics, dashboards, tracing, backups, or retention policies
-- Railway or other deployment configuration
-
-`ERROR_RESILIENCE.md` contains the current error-handling notes and future hardening recommendations. Treat those recommendations, `build-plan.md`, and any unimplemented route examples as design direction rather than shipped API behavior.
