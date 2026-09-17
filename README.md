@@ -16,6 +16,7 @@ Stack: Bun, Express, TypeScript, and PostgreSQL.
 - Autonomy bands are sorted by level and evaluated against `min_` and `max_` numeric constraints.
 - Matching inputs produce an approved decision and autonomy level. Inputs outside every band produce an AL0 escalation result.
 - Decisions store the exact policy version, inputs, output, autonomy level, latency, correlation ID, current hash, and previous hash.
+- The hash chain can be verified: `verifyChain` recomputes every decision hash through the same builder that created it and checks every `prevHash` link, and `GET /decisions/verify` runs that check over the stored decisions.
 - Events are stored with type, actor, payload, timestamp, and correlation ID.
 - Outcomes use upsert semantics and compute a binary reward from `success` or the backward-compatible `won` metric, subject to the matched band's constraints.
 - Request errors are passed through structured middleware, while startup migration failures stop the process and SIGTERM/SIGINT trigger graceful shutdown.
@@ -121,6 +122,24 @@ Creates or updates an outcome for an existing decision. The body requires an obj
 
 Returns the stored outcome for a decision, or a not-found error when no outcome exists.
 
+## Verify the chain
+
+Each decision stores a SHA-256 over its inputs, output, previous hash, and policy version. `GET /decisions/verify` loads every decision oldest first, recomputes each hash with the same builder that wrote it, and checks that each record's `prevHash` is the hash of the record before it. The route only reads; it writes nothing.
+
+```bash
+curl http://localhost:3000/decisions/verify
+```
+
+The response uses the usual `{ "success": true, "data": { ... } }` envelope. Inside `data`:
+
+- `ok`: `true` when every hash and every link checked out.
+- `count`: how many decisions were checked.
+- `index`, `id`, and `breakType`: present only when `ok` is `false`. They give the position and ID of the first broken record, and whether the break is a `content` mismatch (the record's own fields no longer hash to its stored hash) or a `link` mismatch (its `prevHash` does not point at the record before it).
+
+An empty table verifies, and the oldest record must carry a null `prevHash` to count as the genesis record. Ordering is by `ts` ascending with `id` ascending as the tie-break, since `ts` alone does not define an order for decisions that share a timestamp.
+
+The `verifyChain` function in `src/core/decisions/verify.ts` is pure. It takes rows in chain order and touches no database, so its unit tests need no PostgreSQL.
+
 ## Policy model
 
 Policies are stored as JSON documents in `policy_versions`. A node contains authorities, each authority has an action and ordered autonomy bands, and an authority can name an escalation target with `ifOutside`.
@@ -134,7 +153,7 @@ The seed policy defines `finance` and `approve_discount` with AL1, AL2, and AL3 
 
 ## Testing
 
-The default test command runs the unit suites for reward computation and policy evaluation, and needs no database:
+The default test command runs the unit suites for reward computation, policy evaluation, decision hashing, and hash-chain verification, and needs no database:
 
 ```bash
 bun run test
