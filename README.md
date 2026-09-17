@@ -1,7 +1,5 @@
 # Constitution Engine
 
-> **PROTOTYPE** — Deterministic governance prototype. No live LLM integration, no users, not production. Treat as an implementation-grounded experiment, not a deployed service.
-
 Constitution Engine is a backend MVP for recording events, evaluating actions against versioned policy rules, and linking decisions to later outcomes. Its governance model is deliberately deterministic: policy constraints are evaluated in code, the selected policy version is stored with each decision, and decisions are linked with a hash chain for tamper-evident history.
 
 The repository currently ships a local Bun, Express, TypeScript, and PostgreSQL service. It does not yet ship an LLM adapter, external tool adapters, scheduled jobs, vector similarity search, authentication, or a deployment configuration.
