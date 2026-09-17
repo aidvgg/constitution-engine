@@ -1,5 +1,7 @@
 # Constitution Engine
 
+[![CI](https://github.com/aidvgg/constitution-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/aidvgg/constitution-engine/actions/workflows/ci.yml)
+
 Constitution Engine is a backend MVP for recording events, evaluating actions against versioned policy rules, and linking decisions to later outcomes. Its governance model is deliberately deterministic: policy constraints are evaluated in code, the selected policy version is stored with each decision, and decisions are linked with a hash chain for tamper-evident history.
 
 Local stack: Bun, Express, TypeScript, and PostgreSQL.
